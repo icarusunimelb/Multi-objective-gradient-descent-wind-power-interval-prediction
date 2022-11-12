@@ -17,17 +17,18 @@ from snntorch import spikegen
 from snntorch import surrogate
 import time
 from multi_objective_solver import MOSolver
-from model import MLP, SNN, qd_objective, LSTM
-sns.set(rc = {"figure.figsize" : (24, 18)})
+from model import MLP, SNN, qd_objective, LSTM, GRU
+sns.set(rc = {"figure.figsize" : (32, 24)})
+plt.rcParams['axes.facecolor'] = 'white'
 
 class trainer():
-    def __init__(self, modelType='MLP', lambda1_=0.001, lambda2_=0.0008, soften_=160., num_epoch=100, alpha_=0.05, batch_size=128, train_trop=0.8, num_task=2, input_window_size=24, predicted_step=1, num_neurons=64, threshold=0.5, draw=True, display_size=1000):
+    def __init__(self, modelType='MLP', trainingType='CrossValidation', lambda1_=0.001, lambda2_=0.0008, soften_=160., num_epoch=100, alpha_=0.05, fold_size=8, train_prop = 0.8, batch_size=128, num_task=2, input_window_size=24, predicted_step=1, num_neurons=64, threshold=0.5, draw=True, display_size=1000):
         self.alpha_ = alpha_
         self.batch_size = batch_size
-        self.train_trop = train_trop
         # when num_task == 2, multi objective gradient descent will be applied 
         # when num_task == 1, traditional gradient descent will be applied
         assert num_task in [1, 2]
+        assert fold_size > 1
         self.num_task = num_task
         self.input_window_size = input_window_size
         self.predicted_step = predicted_step
@@ -38,13 +39,21 @@ class trainer():
             self.rnn = False
         else:
             self.rnn = True
+        self.trainingType = trainingType 
+        # cross valiation training or just for a single training
+        assert trainingType in ['CrossValidation', 'SinglePass']
+        if self.trainingType == 'CrossValidation':
+            self.fold_size = fold_size
+        elif self.trainingType == 'SinglePass':
+            self.fold_size = 1
+            self.train_prop = train_prop
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.lambda1_ = lambda1_
         self.lambda2_ = lambda2_
         self.soften_ = soften_
         self.num_epoch = num_epoch
         self.draw = draw
-        self.display_size = display_size
+        self.display_size = display_size 
 
     def train_test_split(self, country='DE'):
         path = './dataset/' + country + '_supervised_wind_power.csv'
@@ -52,24 +61,52 @@ class trainer():
         df = df.set_index('index')
         # dataset has already been normalized.
 
-        # split into train/test
-        batch_num = df.shape[0]//self.batch_size
-        train_batch = int(round(self.train_trop*batch_num))
-        test_batch = batch_num - train_batch
-        train_size = train_batch * self.batch_size
-        test_size = test_batch * self.batch_size
-        train = df.head(train_size).values
-        test = df.tail(test_size).values
+        X_train_list, y_train_list, X_val_list, y_val_list = [], [], [], []
+        
+        if self.trainingType == 'CrossValidation':
+            # k-fold cross validation 
+            # split into train/test
+            batch_num_1fold = (df.shape[0]//(self.batch_size*self.fold_size))
+            df = df.head(batch_num_1fold*self.batch_size*self.fold_size)
+            for i in range(self.fold_size): 
+                train = np.delete(df.values, range(i * batch_num_1fold * self.batch_size, (i+1) * batch_num_1fold * self.batch_size), axis=0)
+                test = df.values[i*batch_num_1fold*self.batch_size:(i+1)*batch_num_1fold*self.batch_size]
+                print(train.shape, test.shape)
 
-        y_train = train[:,-1].reshape(-1,1)
-        y_val = test[:,-1].reshape(-1,1)
-        if self.rnn:
-            X_train = train[:,:-1].reshape(-1,self.input_window_size,1)
-            X_val = test[:,:-1].reshape(-1,self.input_window_size,1)
-        else:
-            X_train = train[:,:-1]
-            X_val = test[:,:-1]
-        return X_train, y_train, X_val, y_val
+                y_train = train[:,-1].reshape(-1,1)
+                y_val = test[:,-1].reshape(-1,1)
+                if self.rnn:
+                    X_train = train[:,:-1].reshape(-1,self.input_window_size,1)
+                    X_val = test[:,:-1].reshape(-1,self.input_window_size,1)
+                else:
+                    X_train = train[:,:-1]
+                    X_val = test[:,:-1]
+                X_train_list.append(X_train)
+                y_train_list.append(y_train)
+                X_val_list.append(X_val)
+                y_val_list.append(y_val)
+        elif self.trainingType == 'SinglePass':
+            batch_num = df.shape[0]//self.batch_size
+            train_batch = int(round(self.train_trop*batch_num))
+            test_batch = batch_num - train_batch
+            train_size = train_batch * self.batch_size
+            test_size = test_batch * self.batch_size
+            train = df.head(train_size).values
+            test = df.tail(test_size).values
+
+            y_train = train[:,-1].reshape(-1,1)
+            y_val = test[:,-1].reshape(-1,1)
+            if self.rnn:
+                X_train = train[:,:-1].reshape(-1,self.input_window_size,1)
+                X_val = test[:,:-1].reshape(-1,self.input_window_size,1)
+            else:
+                X_train = train[:,:-1]
+                X_val = test[:,:-1]
+            X_train_list.append(X_train)
+            y_train_list.append(y_train)
+            X_val_list.append(X_val)
+            y_val_list.append(y_val)
+        return X_train_list, y_train_list, X_val_list, y_val_list
     
     def training_loop(self, X_train, y_train, X_val, y_val, model, optimizer, scheduler, criterion):
         # track the learning rate and train/valid loss
@@ -168,21 +205,21 @@ class trainer():
 
 
         return lrs, train_loss_list_dict, valid_loss_list_dict
-
-    def run(self, country='DE'):
-        # create train, test dataset
-        X_train, y_train, X_val, y_val = self.train_test_split(country=country)
+    
+    def one_fold_training(self, X_train, y_train, X_val, y_val, country='DE'):
         # create model
-        assert self.modelType in ['MLP', 'SNN', 'LSTM']
+        assert self.modelType in ['MLP', 'SNN', 'LSTM', 'BiGRU']
         if self.modelType == 'MLP':
             model = MLP(num_neurons = self.num_neurons, input_window_size = self.input_window_size, predicted_step = self.predicted_step)
         elif self.modelType == 'LSTM':
             model = LSTM(num_neurons = self.num_neurons, input_window_size = self.input_window_size, predicted_step = self.predicted_step, device = self.device)
         elif self.modelType == 'SNN':
             model = SNN(num_neurons = self.num_neurons, threshold = self.threshold, input_window_size = self.input_window_size, predicted_step = self.predicted_step)
+        elif self.modelType == 'BiGRU':
+            model = GRU(num_neurons = self.num_neurons, input_window_size = self.input_window_size, predicted_step = self.predicted_step, bidirectional = True, device = self.device)
         # create optimizer
-        optimizer = optim.Adam(model.parameters(), lr=0.01)
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10,20,30], gamma=0.5)
+        optimizer = optim.Adam(model.parameters(), lr=0.005)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60], gamma=0.5)
         # create loss function
         criterion = {}
         criterion[0] = qd_objective(lambda_=self.lambda1_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
@@ -192,34 +229,45 @@ class trainer():
         model = model.to(self.device)
         for i in range(self.num_task):
             criterion[i] = criterion[i].to(self.device) 
+        
         # begin training
         lrs, train_loss_list_dict, valid_loss_list_dict = self.training_loop(X_train = X_train, y_train = y_train, X_val = X_val, y_val = y_val, model = model, optimizer = optimizer, scheduler = scheduler, criterion = criterion)
 
         if self.draw:
-            prefix = country + '_' + self.modelType + '_' +str(self.num_task) + 'task_'
+            prefix = country + '/' + self.modelType + '_task' +str(self.num_task) + '_fold' + str(self.fold_size)+'_'
+            '''
+            # tracking learning rate
             plt.plot(lrs)
             plt.savefig('./fig/'+prefix+'lrs.png')
             plt.show()
+            '''
             for i in range(self.num_task):
-                plt.plot(train_loss_list_dict[i][:], color='r')
-                plt.plot(valid_loss_list_dict[i][:], color='b')
+                plt.plot(train_loss_list_dict[i][:], color='r', linewidth=3, label='Training loss')
+                plt.plot(valid_loss_list_dict[i][:], color='b', linewidth=3, label='Validation loss')
+                plt.xlabel("Training epoches",fontsize=64)
+                plt.ylabel("Training loss",fontsize=64)
+                plt.xticks(fontsize = 42)
+                plt.yticks(fontsize = 42)
+                plt.legend(loc="upper left",fontsize=64)
                 plt.savefig('./fig/'+prefix+'loss'+str(i)+'.png')
                 plt.show()
-            self.display_size = 1000
+            self.display_size = 500
             # plot and view some predictions
             y_pred = model(Variable(torch.tensor(X_val[:self.display_size],dtype=torch.float)).to(self.device))
             y_u_pred = y_pred[:,0]
             y_l_pred = y_pred[:,1]
 
-            plt.plot(np.arange(self.display_size),y_val[:self.display_size,0], color='black',label='observations')
-            plt.plot(np.arange(self.display_size), y_u_pred.cpu().detach().numpy(), color='b') # upper boundary prediction
-            plt.plot(np.arange(self.display_size), y_l_pred.cpu().detach().numpy(), color='b') # lower boundary prediction
-            plt.fill_between(np.arange(self.display_size), y_u_pred.cpu().detach().numpy(), y_l_pred.cpu().detach().numpy(), color='b', label='PIs')
-            plt.xticks(fontsize=20)
-            plt.yticks(fontsize=20)
-            plt.xlabel("period",fontsize=32)
-            plt.ylabel("wind power",fontsize=32)
-            plt.legend(loc="upper left",fontsize=32)
+            plt.plot(np.arange(self.display_size),y_val[:self.display_size,0],linewidth=3, color='black',label='Observations')
+
+            plt.plot(np.arange(self.display_size), y_u_pred.cpu().detach().numpy(), color='#33FFE3') # upper boundary prediction
+            plt.plot(np.arange(self.display_size), y_l_pred.cpu().detach().numpy(), color='#33FFE3') # lower boundary prediction
+            plt.fill_between(np.arange(self.display_size), y_u_pred.cpu().detach().numpy(), y_l_pred.cpu().detach().numpy(), color='#33FFE3', label='Prediction intervals')
+            plt.xlabel("Time(hour)",fontsize=64)
+            plt.ylabel("Normalized wind power",fontsize=64)
+            plt.xticks(fontsize = 42)
+            plt.yticks(fontsize = 42)
+            plt.legend(loc="upper left",fontsize=64)
+
             plt.savefig('./fig/'+prefix+'PIs.png')
             plt.show()
         # print some stats
@@ -232,7 +280,27 @@ class trainer():
         mpiw = torch.round(torch.mean(torch.absolute(y_u_pred - y_l_pred)),decimals=3)
         print('PICP:', picp)
         print('MPIW:', mpiw)
-        return picp, mpiw
+        return picp.cpu().detach().numpy(), mpiw.cpu().detach().numpy()
+
+    def run(self, country='DE'):
+        # create train, test dataset
+        X_train_list, y_train_list, X_val_list, y_val_list = self.train_test_split(country=country)
+        picp_list = []
+        mpiw_list = []
+        for i in range(self.fold_size):
+            print('--------------------------------------------------fold'+str(i)+'---------------------------------------------------------')
+            picp, mpiw = self.one_fold_training(X_train_list[i], y_train_list[i], X_val_list[i], y_val_list[i], country = country)
+            picp_list.append(picp)
+            mpiw_list.append(mpiw)    
+        print("picp mean: "+str(np.mean(picp_list)))
+        print("picp std: "+str(np.std(picp_list)))
+        print("mpiw mean: "+str(np.mean(mpiw_list)))
+        print("mpiw std: "+str(np.std(mpiw_list)))
+        return np.mean(picp_list), np.std(picp_list), np.mean(mpiw_list), np.std(mpiw_list)
+        
+            
+        
+
         
         
             

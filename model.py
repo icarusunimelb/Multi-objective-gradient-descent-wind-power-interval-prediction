@@ -86,6 +86,7 @@ class LSTM(nn.Module):
         self.lstm1 = nn.LSTMCell(1, self.num_neurons)
         self.lstm2 = nn.LSTMCell(self.num_neurons, self.num_neurons)
         self.output = nn.Linear(self.num_neurons, 2)
+        self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
 
     def forward(self, x):   
         # batch_size x hidden_size
@@ -105,6 +106,29 @@ class LSTM(nn.Module):
             hidden_state_1, cell_state_1 = self.lstm1(x[:, i], (hidden_state_1, cell_state_1))
             hidden_state_2, cell_state_2 = self.lstm2(hidden_state_1, (hidden_state_2, cell_state_2))
         output = self.output(hidden_state_2)
+        return output
+
+class GRU(nn.Module):
+    # Note the GRU used in the paper is Bidirectional GRU
+    def __init__(self, num_neurons = 64, input_window_size = 24, predicted_step = 1, layer_num = 2, bidirectional = True, device = 'cpu'):
+        super(GRU, self).__init__()
+        self.input_window_size = input_window_size
+        self.predicted_step = predicted_step
+        self.num_neurons = num_neurons
+        self.device = device
+        self.layer_num = layer_num
+        self.D = 1
+        if bidirectional:
+            self.D = 2
+        self.gru = nn.GRU(1, self.num_neurons, self.layer_num, batch_first=True, bidirectional = bidirectional)
+        self.output = nn.Linear(self.D*self.num_neurons, 2)
+        self.output.bias = torch.nn.Parameter(torch.tensor([0.5,-0.5]))
+
+    def forward(self, x):  
+        # Initializing hidden state for first input with zeros
+        hidden_state0 = torch.zeros(self.D*self.layer_num, x.size(0), self.num_neurons).to(self.device)
+        output, _ = self.gru(x, hidden_state0)
+        output = self.output(output[:, -1, :])
         return output
 
 class SNN(nn.Module):
