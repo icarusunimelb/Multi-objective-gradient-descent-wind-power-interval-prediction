@@ -122,13 +122,13 @@ class GRU(nn.Module):
             self.D = 2
         self.gru = nn.GRU(1, self.num_neurons, self.layer_num, batch_first=True, bidirectional = bidirectional)
         self.output = nn.Linear(self.D*self.num_neurons, 2)
-        self.output.bias = torch.nn.Parameter(torch.tensor([0.5,-0.5]))
+        self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
 
     def forward(self, x):  
         # Initializing hidden state for first input with zeros
         hidden_state0 = torch.zeros(self.D*self.layer_num, x.size(0), self.num_neurons).to(self.device)
         output, _ = self.gru(x, hidden_state0)
-        output = self.output(output[:, -1, :])
+        output = self.output(output[:,-1,:])
         return output
 
 class SNN(nn.Module):

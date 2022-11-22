@@ -87,7 +87,7 @@ class trainer():
                 y_val_list.append(y_val)
         elif self.trainingType == 'SinglePass':
             batch_num = df.shape[0]//self.batch_size
-            train_batch = int(round(self.train_trop*batch_num))
+            train_batch = int(round(self.train_prop*batch_num))
             test_batch = batch_num - train_batch
             train_size = train_batch * self.batch_size
             test_size = test_batch * self.batch_size
@@ -218,8 +218,9 @@ class trainer():
         elif self.modelType == 'BiGRU':
             model = GRU(num_neurons = self.num_neurons, input_window_size = self.input_window_size, predicted_step = self.predicted_step, bidirectional = True, device = self.device)
         # create optimizer
-        optimizer = optim.Adam(model.parameters(), lr=0.005)
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60], gamma=0.5)
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        # employ learning rate scheduler, the default scheduler wonnt change the learning rate, feel free to modify it
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[], gamma=1)
         # create loss function
         criterion = {}
         criterion[0] = qd_objective(lambda_=self.lambda1_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
