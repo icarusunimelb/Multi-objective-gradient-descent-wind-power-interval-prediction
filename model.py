@@ -13,7 +13,38 @@ from torch.autograd import Variable
 import math
 import snntorch as snn
 from snntorch import spikegen
-from snntorch import surrogate  
+from snntorch import surrogate 
+
+class winkler_objective(nn.Module):
+    "Constrainted Winkler loss function"
+    def __init__(self, lambda_ = 0.001, alpha_ = 0.05, soften_=160., device='cpu', batch_size=128):
+        super(winkler_objective, self).__init__()
+        self.lambda_ = lambda_
+        self.alpha_ = alpha_
+        self.soften_ = soften_
+        self.device = device
+        self.batch_size = batch_size
+    
+    def forward(self, y_pred, y_true):
+        y_true = y_true[:,0]
+        y_u = y_pred[:,0]
+        y_l = y_pred[:,1]
+
+        K_SU = torch.sigmoid(self.soften_ * (y_u - y_true))
+        K_SL = torch.sigmoid(self.soften_ * (y_true - y_l))
+        K_S = torch.multiply(K_SU, K_SL)
+        
+        PICP_S = torch.mean(K_S)
+        MLE_PICP = self.batch_size / (self.alpha_ * (1-self.alpha_)) * torch.square((1-self.alpha_) - PICP_S)
+
+        S_t = torch.abs(y_u-y_l) + (2/self.alpha_)*(torch.multiply(y_l-y_true, torch.sigmoid(self.soften_ * (y_l - y_true)))) + (2/self.alpha_)*(torch.multiply(y_true-y_u, torch.sigmoid(self.soften_ * (y_true - y_u))))
+        S_overline = torch.mean(S_t)
+
+        Loss = S_overline + self.lambda_ * MLE_PICP 
+
+        return Loss
+
+
 
 class qd_objective(nn.Module):
     '''Loss_QD'''
@@ -27,9 +58,9 @@ class qd_objective(nn.Module):
         self.batch_size = batch_size
     
     def forward(self, y_pred, y_true):
-        y_true = y_true[:,0]
-        y_u = y_pred[:,0]
-        y_l = y_pred[:,1]
+        y_true = y_true[:,i]
+        y_u = y_pred[:,2*i]
+        y_l = y_pred[:,2*i+1]
 
         K_HU = torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_u - y_true))
         K_HL = torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_true - y_l))
@@ -62,7 +93,7 @@ class MLP(nn.Module):
         self.bn2= nn.BatchNorm1d(self.num_neurons)
         self.fc3 = nn.Linear(self.num_neurons, self.num_neurons)
         self.bn3= nn.BatchNorm1d(self.num_neurons)
-        self.output = nn.Linear(self.num_neurons, 2)
+        self.output = nn.Linear(self.num_neurons, 2*self.predicted_step)
         self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
 
     def forward(self, x):
@@ -85,7 +116,7 @@ class LSTM(nn.Module):
         self.device = device
         self.lstm1 = nn.LSTMCell(1, self.num_neurons)
         self.lstm2 = nn.LSTMCell(self.num_neurons, self.num_neurons)
-        self.output = nn.Linear(self.num_neurons, 2)
+        self.output = nn.Linear(self.num_neurons, 2*self.predicted_step)
         self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
 
     def forward(self, x):   
@@ -121,7 +152,7 @@ class GRU(nn.Module):
         if bidirectional:
             self.D = 2
         self.gru = nn.GRU(1, self.num_neurons, self.layer_num, batch_first=True, bidirectional = bidirectional)
-        self.output = nn.Linear(self.D*self.num_neurons, 2)
+        self.output = nn.Linear(self.D*self.num_neurons, 2*self.predicted_step)
         self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
 
     def forward(self, x):  
@@ -141,7 +172,7 @@ class SNN(nn.Module):
         self.threshold = threshold
         self.slstm1 = snn.SLSTM(1, self.num_neurons, threshold=self.threshold, spike_grad=surrogate.fast_sigmoid(), learn_threshold=True)
         self.slstm2 = snn.SLSTM(self.num_neurons, self.num_neurons, threshold=self.threshold, spike_grad=surrogate.fast_sigmoid(), learn_threshold=True)
-        self.output = nn.Linear((self.input_window_size+2)*self.num_neurons, 2)
+        self.output = nn.Linear((self.input_window_size+2)*self.num_neurons, 2*self.predicted_step)
         self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
 
     def forward(self, x):

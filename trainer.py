@@ -17,12 +17,12 @@ from snntorch import spikegen
 from snntorch import surrogate
 import time
 from multi_objective_solver import MOSolver
-from model import MLP, SNN, qd_objective, LSTM, GRU
+from model import MLP, SNN, qd_objective, LSTM, GRU, winkler_objective
 sns.set(rc = {"figure.figsize" : (32, 24)})
 plt.rcParams['axes.facecolor'] = 'white'
 
 class trainer():
-    def __init__(self, modelType='MLP', trainingType='CrossValidation', lambda1_=0.001, lambda2_=0.0008, soften_=160., num_epoch=100, alpha_=0.05, fold_size=8, train_prop = 0.8, batch_size=128, num_task=2, input_window_size=24, predicted_step=1, num_neurons=64, threshold=0.5, draw=True, display_size=1000):
+    def __init__(self, modelType='MLP', trainingType='CrossValidation', lossType='qd', lambda1_=0.001, lambda2_=0.0008, gamma_=0.1, soften_=160., num_epoch=100, alpha_=0.05, fold_size=8, train_prop = 0.8, batch_size=128, num_task=2, input_window_size=24, predicted_step=1, num_neurons=64, threshold=0.5, draw=True, display_size=1000):
         self.alpha_ = alpha_
         self.batch_size = batch_size
         # when num_task == 2, multi objective gradient descent will be applied 
@@ -50,13 +50,16 @@ class trainer():
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.lambda1_ = lambda1_
         self.lambda2_ = lambda2_
+        self.gamma_ = gamma_
         self.soften_ = soften_
         self.num_epoch = num_epoch
         self.draw = draw
         self.display_size = display_size 
+        assert lossType in ['qd', 'winkler']
+        self.lossType = lossType
 
     def train_test_split(self, country='DE'):
-        path = './dataset/' + country + '_supervised_wind_power.csv'
+        path = './dataset/' + str(self.predicted_step)+'_'+country + '_supervised_wind_power.csv'
         df = pd.read_csv(path)
         df = df.set_index('index')
         # dataset has already been normalized.
@@ -73,14 +76,14 @@ class trainer():
                 test = df.values[i*batch_num_1fold*self.batch_size:(i+1)*batch_num_1fold*self.batch_size]
                 print(train.shape, test.shape)
 
-                y_train = train[:,-1].reshape(-1,1)
-                y_val = test[:,-1].reshape(-1,1)
+                y_train = train[:,-self.predicted_step:].reshape(-1,self.predicted_step)
+                y_val = test[:,-self.predicted_step:].reshape(-1,self.predicted_step)
                 if self.rnn:
-                    X_train = train[:,:-1].reshape(-1,self.input_window_size,1)
-                    X_val = test[:,:-1].reshape(-1,self.input_window_size,1)
+                    X_train = train[:,:-self.predicted_step].reshape(-1,self.input_window_size,1)
+                    X_val = test[:,:-self.predicted_step].reshape(-1,self.input_window_size,1)
                 else:
-                    X_train = train[:,:-1]
-                    X_val = test[:,:-1]
+                    X_train = train[:,:-self.predicted_step]
+                    X_val = test[:,:-self.predicted_step]
                 X_train_list.append(X_train)
                 y_train_list.append(y_train)
                 X_val_list.append(X_val)
@@ -94,14 +97,14 @@ class trainer():
             train = df.head(train_size).values
             test = df.tail(test_size).values
 
-            y_train = train[:,-1].reshape(-1,1)
-            y_val = test[:,-1].reshape(-1,1)
+            y_train = train[:,-self.predicted_step:].reshape(-1,self.predicted_step)
+            y_val = test[:,-self.predicted_step:].reshape(-1,self.predicted_step)
             if self.rnn:
-                X_train = train[:,:-1].reshape(-1,self.input_window_size,1)
-                X_val = test[:,:-1].reshape(-1,self.input_window_size,1)
+                X_train = train[:,:-self.predicted_step].reshape(-1,self.input_window_size,1)
+                X_val = test[:,:-self.predicted_step].reshape(-1,self.input_window_size,1)
             else:
-                X_train = train[:,:-1]
-                X_val = test[:,:-1]
+                X_train = train[:,:-self.predicted_step]
+                X_val = test[:,:-self.predicted_step]
             X_train_list.append(X_train)
             y_train_list.append(y_train)
             X_val_list.append(X_val)
@@ -113,9 +116,17 @@ class trainer():
         lrs = []
         train_loss_list_dict = {}
         valid_loss_list_dict = {}
+
+        train_objective_list_dict = {}
+        valid_objective_list_dict = {}
+        objective_dict = {}
         for i in range(self.num_task):
             train_loss_list_dict[i] = [] 
             valid_loss_list_dict[i] = []
+        for i in range(2):
+            train_objective_list_dict[i] = []
+            valid_objective_list_dict[i] = []
+            objective_dict[i] = 0.0
 
         # training loop    
         for epoch in range(self.num_epoch):
@@ -125,6 +136,8 @@ class trainer():
                 train_loss_dict[i] = 0.0
             model.train()
             x_train, Y_train = shuffle(X_train, y_train)
+            for i in range(2):
+                objective_dict[i] = 0.0
             for batch in range(math.ceil(X_train.shape[0]/self.batch_size)):
                 start = batch * self.batch_size
                 end = start + self.batch_size
@@ -173,14 +186,31 @@ class trainer():
                 
                 for i in range(self.num_task):
                     train_loss_dict[i] = train_loss_dict[i] + loss_data[i]*inputs.size(0)
+                K_u = torch.maximum(torch.zeros(1).to(self.device),torch.sign(outputs[:,0] - targets[:,0]))
+                K_l = torch.maximum(torch.zeros(1).to(self.device),torch.sign(targets[:,0] - outputs[:,1]))
+                if self.lossType == "winkler":
+                    # winkler loss
+                    objective_dict[0] =  objective_dict[0] + torch.sum(torch.abs(outputs[:,0]-outputs[:,1]) + (2/self.alpha_)*(torch.multiply(outputs[:,1]-targets[:,0], torch.maximum(torch.zeros(1).to(self.device),torch.sign(outputs[:,1] - targets[:,0])))) + (2/self.alpha_)*(torch.multiply(targets[:,0]-outputs[:,0], torch.maximum(torch.zeros(1).to(self.device),torch.sign(targets[:,0] - outputs[:,0])))))
+                    picp = torch.mean(K_u * K_l)
+                    # coverage probability constraint
+                    objective_dict[1] = objective_dict[1] + self.batch_size*self.batch_size/ (self.alpha_ * (1-self.alpha_)) * torch.square((1-self.alpha_) - picp)
+                else:
+                    # PICP
+                    objective_dict[0] = objective_dict[0] + torch.mean(torch.multiply(K_u, K_l))*self.batch_size
+                    # MPIW
+                    objective_dict[1] = objective_dict[1] + torch.sum(torch.abs(outputs[:,0] - outputs[:,1]))
             for i in range(self.num_task):
                 train_loss_list_dict[i].append(train_loss_dict[i]/X_train.shape[0])
+            for i in range(2):   
+                train_objective_list_dict[i].append((objective_dict[i]/X_train.shape[0]).cpu().detach())
                 
             # validation
             valid_loss_dict = {}
             for i in range(self.num_task):
                 valid_loss_dict[i] = 0.0
             model.eval()
+            for i in range(2):
+                objective_dict[i] = 0.0
             for batch in range(math.ceil(X_val.shape[0]/self.batch_size)):
                 start = batch * self.batch_size
                 end = start + self.batch_size
@@ -192,8 +222,23 @@ class trainer():
                     loss_data[i] = loss_t.item()
                 for i in range(self.num_task):
                     valid_loss_dict[i] = valid_loss_dict[i] + loss_data[i]*inputs.size(0)
+                K_u = torch.maximum(torch.zeros(1).to(self.device),torch.sign(outputs[:,0] - targets[:,0]))
+                K_l = torch.maximum(torch.zeros(1).to(self.device),torch.sign(targets[:,0] - outputs[:,1]))
+                if self.lossType == "winkler":
+                    # winkler loss
+                    objective_dict[0] =  objective_dict[0] + torch.sum(torch.abs(outputs[:,0]-outputs[:,1]) + (2/self.alpha_)*(torch.multiply(outputs[:,1]-targets[:,0], torch.maximum(torch.zeros(1).to(self.device),torch.sign(outputs[:,1] - targets[:,0])))) + (2/self.alpha_)*(torch.multiply(targets[:,0]-outputs[:,0], torch.maximum(torch.zeros(1).to(self.device),torch.sign(targets[:,0] - outputs[:,0])))))
+                    picp = torch.mean(K_u * K_l)
+                    # coverage probability constraint
+                    objective_dict[1] = objective_dict[1] + self.batch_size*self.batch_size/ (self.alpha_ * (1-self.alpha_)) * torch.square((1-self.alpha_) - picp)
+                else:
+                    # PICP
+                    objective_dict[0] = objective_dict[0] + torch.mean(torch.multiply(K_u, K_l))*self.batch_size
+                    # MPIW
+                    objective_dict[1] = objective_dict[1] + torch.sum(torch.abs(outputs[:,0] - outputs[:,1]))
             for i in range(self.num_task):
                 valid_loss_list_dict[i].append(valid_loss_dict[i]/X_val.shape[0])
+            for i in range(2):   
+                valid_objective_list_dict[i].append((objective_dict[i]/X_val.shape[0]).cpu().detach())
             lrs.append(optimizer.param_groups[0]["lr"])
             scheduler.step()
             # print logging
@@ -204,7 +249,7 @@ class trainer():
                 print(f'Epoch {epoch+1} \t\t Training Loss: {train_loss_dict[i] / X_train.shape[0]} \t\t Validation Loss: {valid_loss_dict[i] / X_val.shape[0]}')
 
 
-        return lrs, train_loss_list_dict, valid_loss_list_dict
+        return lrs, train_loss_list_dict, valid_loss_list_dict, train_objective_list_dict, valid_objective_list_dict
     
     def one_fold_training(self, X_train, y_train, X_val, y_val, country='DE'):
         # create model
@@ -223,16 +268,22 @@ class trainer():
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[], gamma=1)
         # create loss function
         criterion = {}
-        criterion[0] = qd_objective(lambda_=self.lambda1_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
-        if self.num_task == 2:
-            criterion[1] = qd_objective(lambda_=self.lambda2_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
+        assert self.lossType in ['qd','winkler']
+        if self.lossType == 'qd':
+            criterion[0] = qd_objective(lambda_=self.lambda1_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
+            if self.num_task == 2:
+                criterion[1] = qd_objective(lambda_=self.lambda2_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
+        elif self.lossType == 'winkler':
+            criterion[0] = winkler_objective(lambda_=self.lambda1_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
+            if self.num_task == 2:
+                criterion[1] = winkler_objective(lambda_=self.lambda2_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
         # to device
         model = model.to(self.device)
         for i in range(self.num_task):
             criterion[i] = criterion[i].to(self.device) 
         
         # begin training
-        lrs, train_loss_list_dict, valid_loss_list_dict = self.training_loop(X_train = X_train, y_train = y_train, X_val = X_val, y_val = y_val, model = model, optimizer = optimizer, scheduler = scheduler, criterion = criterion)
+        lrs, train_loss_list_dict, valid_loss_list_dict, train_objective_list_dict, valid_objective_list_dict= self.training_loop(X_train = X_train, y_train = y_train, X_val = X_val, y_val = y_val, model = model, optimizer = optimizer, scheduler = scheduler, criterion = criterion)
 
         if self.draw:
             prefix = country + '/' + self.modelType + '_task' +str(self.num_task) + '_fold' + str(self.fold_size)+'_'
@@ -242,6 +293,8 @@ class trainer():
             plt.savefig('./fig/'+prefix+'lrs.png')
             plt.show()
             '''
+            '''
+            # tracking two intermediate loss functions
             for i in range(self.num_task):
                 plt.plot(train_loss_list_dict[i][:], color='r', linewidth=3, label='Training loss')
                 plt.plot(valid_loss_list_dict[i][:], color='b', linewidth=3, label='Validation loss')
@@ -252,13 +305,35 @@ class trainer():
                 plt.legend(loc="upper left",fontsize=64)
                 plt.savefig('./fig/'+prefix+'loss'+str(i)+'.png')
                 plt.show()
-            self.display_size = 500
+            '''
+            '''
+            # tracking winkler loss and cpc objectives 
+            plt.plot(train_objective_list_dict[0][:], color='r', linewidth=3, label='Training loss')
+            #plt.plot(valid_objective_list_dict[0][:], color='b', linewidth=3, label='Validation loss')
+            plt.xlabel("Training epoches",fontsize=64)
+            plt.ylabel("Winkler loss",fontsize=64)
+            plt.xticks(fontsize = 42)
+            plt.yticks(fontsize = 42)
+            plt.legend(loc="upper left",fontsize=64)
+            plt.show()
+
+            plt.plot(train_objective_list_dict[1][:], color='r', linewidth=3, label='Training loss')
+            #plt.plot(valid_objective_list_dict[1][:], color='b', linewidth=3, label='Validation loss')
+            plt.xlabel("Training epoches",fontsize=64)
+            plt.ylabel("Coverage probability constraint",fontsize=64)
+            plt.xticks(fontsize = 42)
+            plt.yticks(fontsize = 42)
+            plt.legend(loc="upper left",fontsize=64)
+            plt.show()
+            '''
+
+            self.display_size = 200
             # plot and view some predictions
-            y_pred = model(Variable(torch.tensor(X_val[:self.display_size],dtype=torch.float)).to(self.device))
+            y_pred = model(Variable(torch.tensor(X_val[300:300+self.display_size],dtype=torch.float)).to(self.device))
             y_u_pred = y_pred[:,0]
             y_l_pred = y_pred[:,1]
 
-            plt.plot(np.arange(self.display_size),y_val[:self.display_size,0],linewidth=3, color='black',label='Observations')
+            plt.plot(np.arange(self.display_size),y_val[300:300+self.display_size,0],linewidth=3, color='black',label='Observations')
 
             plt.plot(np.arange(self.display_size), y_u_pred.cpu().detach().numpy(), color='#33FFE3') # upper boundary prediction
             plt.plot(np.arange(self.display_size), y_l_pred.cpu().detach().numpy(), color='#33FFE3') # lower boundary prediction
@@ -267,7 +342,7 @@ class trainer():
             plt.ylabel("Normalized wind power",fontsize=64)
             plt.xticks(fontsize = 42)
             plt.yticks(fontsize = 42)
-            plt.legend(loc="upper left",fontsize=64)
+            plt.legend(loc="upper right",fontsize=64)
 
             plt.savefig('./fig/'+prefix+'PIs.png')
             plt.show()
@@ -279,25 +354,36 @@ class trainer():
         K_l = torch.maximum(torch.zeros(1).to(self.device),torch.sign(Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device) - y_l_pred))
         picp = torch.mean(K_u * K_l)
         mpiw = torch.round(torch.mean(torch.absolute(y_u_pred - y_l_pred)),decimals=3)
+        S_t = torch.abs(y_u_pred-y_l_pred) + (2/self.alpha_)*(torch.multiply(y_l_pred-Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device), torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_l_pred - Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device))))) + (2/self.alpha_)*(torch.multiply(Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device)-y_u_pred, torch.maximum(torch.zeros(1).to(self.device),torch.sign(Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device) - y_u_pred))))
+        S_overline = torch.mean(S_t)
         print('PICP:', picp)
         print('MPIW:', mpiw)
-        return picp.cpu().detach().numpy(), mpiw.cpu().detach().numpy()
+        print('Winkler Score:',S_overline)
+        return picp.cpu().detach().numpy(), mpiw.cpu().detach().numpy(), S_overline.cpu().detach().numpy(), train_objective_list_dict, valid_objective_list_dict
 
     def run(self, country='DE'):
         # create train, test dataset
         X_train_list, y_train_list, X_val_list, y_val_list = self.train_test_split(country=country)
         picp_list = []
         mpiw_list = []
+        ace_list = []
+        score_list = []
         for i in range(self.fold_size):
             print('--------------------------------------------------fold'+str(i)+'---------------------------------------------------------')
-            picp, mpiw = self.one_fold_training(X_train_list[i], y_train_list[i], X_val_list[i], y_val_list[i], country = country)
+            picp, mpiw, score = self.one_fold_training(X_train_list[i], y_train_list[i], X_val_list[i], y_val_list[i], country = country)
             picp_list.append(picp)
-            mpiw_list.append(mpiw)    
+            mpiw_list.append(mpiw)  
+            ace_list.append(picp-(1-self.alpha_))
+            score_list.append(score)  
         print("picp mean: "+str(np.mean(picp_list)))
         print("picp std: "+str(np.std(picp_list)))
         print("mpiw mean: "+str(np.mean(mpiw_list)))
         print("mpiw std: "+str(np.std(mpiw_list)))
-        return np.mean(picp_list), np.std(picp_list), np.mean(mpiw_list), np.std(mpiw_list)
+        print("ace mean: "+str(np.mean(ace_list)))
+        print("ace std: "+str(np.std(ace_list)))
+        print("winkler score mean: "+str(np.mean(score_list)))
+        print("winkler score std: "+str(np.std(score_list)))
+        return np.mean(picp_list), np.std(picp_list), np.mean(mpiw_list), np.std(mpiw_list), np.mean(ace_list), np.std(ace_list), np.mean(score_list), np.std(score_list)
         
             
         

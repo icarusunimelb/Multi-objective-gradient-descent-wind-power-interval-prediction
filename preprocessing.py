@@ -9,7 +9,7 @@ import matplotlib.style as style
 
 DATASET_PATH = './dataset/ninja_wind_europe_v1.1_current_national.csv'
 INPUT_WINDOW_SIZE = 24
-PREDICTED_STEP = 1
+PREDICTED_STEP = 24
 
 def data_reader():
     df = pd.read_csv(DATASET_PATH)
@@ -55,7 +55,7 @@ def pre_process(data, country='DE', input_window_size=48, predicted_step=1):
     
     supervised_df = series_to_supervised(scaled_np, input_window_size, predicted_step)
     
-    supervised_df_path = './dataset/'+country+'_supervised_wind_power.csv'
+    supervised_df_path = './dataset/'+str(predicted_step)+'_'+country+'_supervised_wind_power.csv'
     supervised_df.to_csv(supervised_df_path, index_label='index')
 
 df = data_reader()
