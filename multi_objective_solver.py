@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+# Code from https://github.com/isl-org/MultiObjectiveOptimization 
 class MOSolver: 
     def _min_norm_element_from2(v1v1, v1v2, v2v2):
         """

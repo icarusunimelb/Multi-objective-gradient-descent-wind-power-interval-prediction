@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import torch.utils.data as data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-from torch.autograd import Variable
 import math
 import snntorch as snn
 from snntorch import spikegen
@@ -58,9 +57,9 @@ class qd_objective(nn.Module):
         self.batch_size = batch_size
     
     def forward(self, y_pred, y_true):
-        y_true = y_true[:,i]
-        y_u = y_pred[:,2*i]
-        y_l = y_pred[:,2*i+1]
+        y_true = y_true[:,0]
+        y_u = y_pred[:,0]
+        y_l = y_pred[:,1]
 
         K_HU = torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_u - y_true))
         K_HL = torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_true - y_l))
@@ -197,4 +196,3 @@ class SNN(nn.Module):
         
         otp = self.output(lst)
         return otp
-
