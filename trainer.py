@@ -17,12 +17,12 @@ from snntorch import spikegen
 from snntorch import surrogate
 import time
 from multi_objective_solver import MOSolver
-from model import MLP, SNN, qd_objective, LSTM, GRU, winkler_objective
+from model import MLP, SNN, qd_objective, LSTM, GRU, winkler_objective, VariationalLSTM
 sns.set(rc = {"figure.figsize" : (32, 24)})
 plt.rcParams['axes.facecolor'] = 'white'
 
 class trainer():
-    def __init__(self, modelType='MLP', trainingType='CrossValidation', lossType='qd', lambda1_=0.001, lambda2_=0.0008, gamma_=0.1, soften_=160., num_epoch=100, alpha_=0.05, fold_size=8, train_prop = 0.8, batch_size=128, num_task=2, input_window_size=24, predicted_step=1, num_neurons=64, threshold=0.5, draw=True, display_size=1000):
+    def __init__(self, modelType='MLP', trainingType='CrossValidation', lossType='qd', lambda1_=0.001, lambda2_=0.0008, soften_=160., num_epoch=100, alpha_=0.05, fold_size=8, train_prop = 0.8, batch_size=128, num_task=2, input_window_size=24, predicted_step=1, num_neurons=64, threshold=0.5, draw=True, display_size=1000):
         self.alpha_ = alpha_
         self.batch_size = batch_size
         # when num_task == 2, multi objective gradient descent will be applied 
@@ -50,7 +50,6 @@ class trainer():
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.lambda1_ = lambda1_
         self.lambda2_ = lambda2_
-        self.gamma_ = gamma_
         self.soften_ = soften_
         self.num_epoch = num_epoch
         self.draw = draw
@@ -344,7 +343,7 @@ class trainer():
             plt.yticks(fontsize = 42)
             plt.legend(loc="upper right",fontsize=64)
 
-            plt.savefig('./fig/'+prefix+'PIs.png')
+            # plt.savefig('./fig/'+prefix+'PIs.png')
             plt.show()
         # print some stats
         y_pred = model(Variable(torch.tensor(X_val,dtype=torch.float)).to(self.device))
