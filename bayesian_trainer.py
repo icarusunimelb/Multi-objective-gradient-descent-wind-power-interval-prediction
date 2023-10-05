@@ -167,6 +167,17 @@ class bayesian_trainer():
         if self.draw:
             prefix = country + '/' + self.modelType + '_fold' + str(self.fold_size)+'_'
 
+            # Convergence grapha
+            plt.plot(train_loss_list[:], color='r', linewidth=3, label='Training loss')
+            plt.plot(valid_loss_list[:], color='b', linewidth=3, label='Validation loss')
+            plt.xlabel("Training epoches",fontsize=64)
+            plt.ylabel("Training loss",fontsize=64)
+            plt.xticks(fontsize = 42)
+            plt.yticks(fontsize = 42)
+            plt.legend(loc="upper left",fontsize=32)
+            # plt.savefig('./fig/'+prefix+'loss'+'.png')
+            plt.show()
+
             # plot and view some predictions
             predictions = []
             for t in range(self.num_forward_passes):
@@ -243,7 +254,11 @@ class bayesian_trainer():
         print('PICP:', picp)
         print('MPIW:', mpiw)
         print('Winkler Score:',S_overline)
-        return picp, mpiw, S_overline
+        print('Upper Bound Mean:', np.mean(y_u_mean))
+        print('Upper Bound Std:', np.mean(y_u_std))
+        print('Lower Bound Mean:', np.mean(y_l_mean))
+        print('Lower Bound Std:', np.mean(y_l_std))
+        return picp, mpiw, S_overline, np.mean(y_u_mean), np.mean(y_u_std), np.mean(y_l_mean), np.mean(y_l_std)
     
     def run(self, country='DE'):
         # create train, test dataset
@@ -252,13 +267,20 @@ class bayesian_trainer():
         mpiw_list = []
         ace_list = []
         score_list = []
+        bayesian_dict = {}
+        for key in ['ubm', 'ubs', 'lbm', 'lbs']:
+            bayesian_dict[key] = []
         for i in range(self.fold_size):
             print('--------------------------------------------------fold'+str(i)+'---------------------------------------------------------')
-            picp, mpiw, score = self.one_fold_training(X_train_list[i], y_train_list[i], X_val_list[i], y_val_list[i], country = country)
+            picp, mpiw, score, ubm, ubs, lbm, lbs = self.one_fold_training(X_train_list[i], y_train_list[i], X_val_list[i], y_val_list[i], country = country)
             picp_list.append(picp)
             mpiw_list.append(mpiw)  
             ace_list.append(picp-(1-self.alpha_))
-            score_list.append(score)  
+            score_list.append(score) 
+            bayesian_dict['ubm'].append(ubm)
+            bayesian_dict['ubs'].append(ubs)
+            bayesian_dict['lbm'].append(lbm)
+            bayesian_dict['lbs'].append(lbs)
         print("picp mean: "+str(np.mean(picp_list)))
         print("picp std: "+str(np.std(picp_list)))
         print("mpiw mean: "+str(np.mean(mpiw_list)))
@@ -267,5 +289,11 @@ class bayesian_trainer():
         print("ace std: "+str(np.std(ace_list)))
         print("winkler score mean: "+str(np.mean(score_list)))
         print("winkler score std: "+str(np.std(score_list)))
-        return np.mean(picp_list), np.std(picp_list), np.mean(mpiw_list), np.std(mpiw_list), np.mean(ace_list), np.std(ace_list), np.mean(score_list), np.std(score_list)
-
+        print("mean of upper bound mean: "+str(np.mean(bayesian_dict['ubm'])))
+        print("std of upper bound mean: "+str(np.std(bayesian_dict['ubm'])))
+        print("mean of upper bound std : "+str(np.mean(bayesian_dict['ubs'])))
+        print("std of upper bound std : "+str(np.std(bayesian_dict['ubs'])))
+        print("mean of lower bound mean: "+str(np.mean(bayesian_dict['lbm'])))
+        print("std of lower bound mean: "+str(np.std(bayesian_dict['lbm'])))
+        print("mean of lower bound std: "+str(np.mean(bayesian_dict['lbs'])))
+        print("std of lower bound std: "+str(np.std(bayesian_dict['lbs'])))

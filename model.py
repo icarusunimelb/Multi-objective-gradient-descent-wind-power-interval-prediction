@@ -247,6 +247,7 @@ class GRU(nn.Module):
             self.D = 2
         self.gru = nn.GRU(1, self.num_neurons, self.layer_num, batch_first=True, bidirectional = bidirectional)
         self.output = nn.Linear(self.D*self.num_neurons, 2*self.predicted_step)
+        # When meet init issue in qd objective, can uncomment the following code 
         self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
 
     def forward(self, x):  
