@@ -17,12 +17,12 @@ from snntorch import spikegen
 from snntorch import surrogate
 import time
 from multi_objective_solver import MOSolver
-from model import MLP, SNN, qd_objective, LSTM, GRU, winkler_objective
+from model import MLP, SNN, qd_objective, LSTM, GRU, winkler_objective, VariationalLSTM
 sns.set(rc = {"figure.figsize" : (32, 24)})
 plt.rcParams['axes.facecolor'] = 'white'
 
 class trainer():
-    def __init__(self, modelType='MLP', trainingType='CrossValidation', lossType='qd', lambda1_=0.001, lambda2_=0.0008, gamma_=0.1, soften_=160., num_epoch=100, alpha_=0.05, fold_size=8, train_prop = 0.8, batch_size=128, num_task=2, input_window_size=24, predicted_step=1, num_neurons=64, threshold=0.5, draw=True, display_size=1000):
+    def __init__(self, modelType='MLP', trainingType='CrossValidation', lossType='qd', lambda1_=0.001, lambda2_=0.0008, soften_=160., num_epoch=100, alpha_=0.05, fold_size=8, train_prop = 0.8, batch_size=128, num_task=2, input_window_size=24, predicted_step=1, num_neurons=64, threshold=0.5, draw=True, display_size=1000):
         self.alpha_ = alpha_
         self.batch_size = batch_size
         # when num_task == 2, multi objective gradient descent will be applied 
@@ -50,7 +50,6 @@ class trainer():
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.lambda1_ = lambda1_
         self.lambda2_ = lambda2_
-        self.gamma_ = gamma_
         self.soften_ = soften_
         self.num_epoch = num_epoch
         self.draw = draw
@@ -277,6 +276,7 @@ class trainer():
             criterion[0] = winkler_objective(lambda_=self.lambda1_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
             if self.num_task == 2:
                 criterion[1] = winkler_objective(lambda_=self.lambda2_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
+
         # to device
         model = model.to(self.device)
         for i in range(self.num_task):
@@ -286,14 +286,9 @@ class trainer():
         lrs, train_loss_list_dict, valid_loss_list_dict, train_objective_list_dict, valid_objective_list_dict= self.training_loop(X_train = X_train, y_train = y_train, X_val = X_val, y_val = y_val, model = model, optimizer = optimizer, scheduler = scheduler, criterion = criterion)
 
         if self.draw:
-            prefix = country + '/' + self.modelType + '_task' +str(self.num_task) + '_fold' + str(self.fold_size)+'_'
+            
             '''
-            # tracking learning rate
-            plt.plot(lrs)
-            plt.savefig('./fig/'+prefix+'lrs.png')
-            plt.show()
-            '''
-            '''
+ 
             # tracking two intermediate loss functions
             for i in range(self.num_task):
                 plt.plot(train_loss_list_dict[i][:], color='r', linewidth=3, label='Training loss')
@@ -303,13 +298,11 @@ class trainer():
                 plt.xticks(fontsize = 42)
                 plt.yticks(fontsize = 42)
                 plt.legend(loc="upper left",fontsize=64)
-                plt.savefig('./fig/'+prefix+'loss'+str(i)+'.png')
                 plt.show()
-            '''
             '''
             # tracking winkler loss and cpc objectives 
             plt.plot(train_objective_list_dict[0][:], color='r', linewidth=3, label='Training loss')
-            #plt.plot(valid_objective_list_dict[0][:], color='b', linewidth=3, label='Validation loss')
+            plt.plot(valid_objective_list_dict[0][:], color='b', linewidth=3, label='Validation loss')
             plt.xlabel("Training epoches",fontsize=64)
             plt.ylabel("Winkler loss",fontsize=64)
             plt.xticks(fontsize = 42)
@@ -318,14 +311,13 @@ class trainer():
             plt.show()
 
             plt.plot(train_objective_list_dict[1][:], color='r', linewidth=3, label='Training loss')
-            #plt.plot(valid_objective_list_dict[1][:], color='b', linewidth=3, label='Validation loss')
+            plt.plot(valid_objective_list_dict[1][:], color='b', linewidth=3, label='Validation loss')
             plt.xlabel("Training epoches",fontsize=64)
             plt.ylabel("Coverage probability constraint",fontsize=64)
             plt.xticks(fontsize = 42)
             plt.yticks(fontsize = 42)
             plt.legend(loc="upper left",fontsize=64)
             plt.show()
-            '''
 
             self.display_size = 200
             # plot and view some predictions
@@ -343,8 +335,6 @@ class trainer():
             plt.xticks(fontsize = 42)
             plt.yticks(fontsize = 42)
             plt.legend(loc="upper right",fontsize=64)
-
-            plt.savefig('./fig/'+prefix+'PIs.png')
             plt.show()
         # print some stats
         y_pred = model(Variable(torch.tensor(X_val,dtype=torch.float)).to(self.device))
