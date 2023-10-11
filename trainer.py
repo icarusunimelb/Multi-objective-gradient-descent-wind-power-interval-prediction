@@ -17,13 +17,19 @@ from snntorch import spikegen
 from snntorch import surrogate
 import time
 from multi_objective_solver import MOSolver
-from model import MLP, SNN, qd_objective, LSTM, GRU, winkler_objective, VariationalLSTM
+from model import MLP, SNN, qd_objective, LSTM, GRU, winkler_objective, VariationalLSTM, DeepAR, gaussian_log_likelihood
 sns.set(rc = {"figure.figsize" : (32, 24)})
 plt.rcParams['axes.facecolor'] = 'white'
 
 class trainer():
     def __init__(self, modelType='MLP', trainingType='CrossValidation', lossType='qd', lambda1_=0.001, lambda2_=0.0008, soften_=160., num_epoch=100, alpha_=0.05, fold_size=8, train_prop = 0.8, batch_size=128, num_task=2, input_window_size=24, predicted_step=1, num_neurons=64, threshold=0.5, draw=True, display_size=1000):
         self.alpha_ = alpha_
+        if self.alpha_ == 0.05:
+            self.n_std_devs = 1.96
+        elif self.alpha_ == 0.10:
+            self.n_std_devs = 1.645
+        elif self.alpha_ == 0.01:
+            self.n_std_devs = 2.575
         self.batch_size = batch_size
         # when num_task == 2, multi objective gradient descent will be applied 
         # when num_task == 1, traditional gradient descent will be applied
@@ -54,7 +60,7 @@ class trainer():
         self.num_epoch = num_epoch
         self.draw = draw
         self.display_size = display_size 
-        assert lossType in ['qd', 'winkler']
+        assert lossType in ['qd', 'winkler','deepAR']
         self.lossType = lossType
 
     def train_test_split(self, country='DE'):
@@ -174,15 +180,21 @@ class trainer():
                             loss = scale[i] * loss_t
                     loss.backward()
                     optimizer.step()
-                else: 
+                elif self.lossType == 'deepAR' : 
+                    optimizer.zero_grad()
+                    mu, sigma = model(inputs)
+                    loss = criterion[0](mu, sigma, targets)
+                    loss_data[0] = loss.item()
+                    loss.backward()
+                    optimizer.step()
+                else:
                     optimizer.zero_grad()
                     outputs = model(inputs)
                     loss = criterion[0](outputs, targets)
                     loss_data[0] = loss.item()
                     loss.backward()
                     optimizer.step()
-
-                
+    
                 for i in range(self.num_task):
                     train_loss_dict[i] = train_loss_dict[i] + loss_data[i]*inputs.size(0)
                 K_u = torch.maximum(torch.zeros(1).to(self.device),torch.sign(outputs[:,0] - targets[:,0]))
@@ -215,7 +227,11 @@ class trainer():
                 end = start + self.batch_size
                 inputs = Variable(torch.tensor(X_val[start:end],dtype=torch.float)).to(self.device)
                 targets = Variable(torch.tensor(y_val[start:end],dtype=torch.float)).to(self.device)
-                outputs = model(inputs)
+                if self.lossType == 'deepAR':
+                    mu, sigma = model(inputs)
+                    outputs = torch.cat([mu+self.n_std_devs*sigma, mu-self.n_std_devs*sigma],1)
+                else:
+                    outputs = model(inputs)
                 for i in range(self.num_task):
                     loss_t = criterion[i](outputs, targets)
                     loss_data[i] = loss_t.item()
@@ -229,7 +245,8 @@ class trainer():
                     picp = torch.mean(K_u * K_l)
                     # coverage probability constraint
                     objective_dict[1] = objective_dict[1] + self.batch_size*self.batch_size/ (self.alpha_ * (1-self.alpha_)) * torch.square((1-self.alpha_) - picp)
-                else:
+                else: 
+                    # DeepAR and Coverage-width critrion methods all use this for validation. 
                     # PICP
                     objective_dict[0] = objective_dict[0] + torch.mean(torch.multiply(K_u, K_l))*self.batch_size
                     # MPIW
@@ -259,6 +276,9 @@ class trainer():
             model = LSTM(num_neurons = self.num_neurons, input_window_size = self.input_window_size, predicted_step = self.predicted_step, device = self.device)
         elif self.modelType == 'SNN':
             model = SNN(num_neurons = self.num_neurons, threshold = self.threshold, input_window_size = self.input_window_size, predicted_step = self.predicted_step)
+        elif self.lossType == 'deepAR':
+            # DeepAR in our work also employs BiGRU, which is different from its original work.
+            model = DeepAR(num_neurons = self.num_neurons,input_window_size = self.input_window_size, predicted_step = self.predicted_step,bidirectional = True, device = self.device) 
         elif self.modelType == 'BiGRU':
             model = GRU(num_neurons = self.num_neurons, input_window_size = self.input_window_size, predicted_step = self.predicted_step, bidirectional = True, device = self.device)
         # create optimizer
@@ -276,6 +296,9 @@ class trainer():
             criterion[0] = winkler_objective(lambda_=self.lambda1_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
             if self.num_task == 2:
                 criterion[1] = winkler_objective(lambda_=self.lambda2_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
+        elif self.lossType == 'deepAR':
+            # DeepAR in our work will not employ multi objective gradient descent. 
+            criterion[0] = gaussian_log_likelihood() 
 
         # to device
         model = model.to(self.device)
@@ -300,6 +323,7 @@ class trainer():
                 plt.legend(loc="upper left",fontsize=64)
                 plt.show()
             '''
+            '''
             # tracking winkler loss and cpc objectives 
             plt.plot(train_objective_list_dict[0][:], color='r', linewidth=3, label='Training loss')
             plt.plot(valid_objective_list_dict[0][:], color='b', linewidth=3, label='Validation loss')
@@ -318,6 +342,7 @@ class trainer():
             plt.yticks(fontsize = 42)
             plt.legend(loc="upper left",fontsize=64)
             plt.show()
+            '''
 
             self.display_size = 200
             # plot and view some predictions
