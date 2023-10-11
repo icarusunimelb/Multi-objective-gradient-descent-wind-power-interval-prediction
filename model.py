@@ -292,3 +292,42 @@ class SNN(nn.Module):
         
         otp = self.output(lst)
         return otp
+
+class gaussian_log_likelihood(nn.Module):
+    '''Compute using gaussian the log-likehood which needs to be maximized.
+        The loss function proposed in https://arxiv.org/abs/1704.04110 . 
+    '''
+    def __init__(self):
+        super(gaussian_log_likelihood, self).__init__()
+        
+    
+    def forward(self, mu, sigma, labels):
+        zero_index = (labels != 0)
+        distribution = torch.distributions.normal.Normal(mu[zero_index], sigma[zero_index])
+        likelihood = distribution.log_prob(labels[zero_index])
+        return -torch.mean(likelihood)
+       
+
+class DeepAR(nn.module): 
+    # This model only makes partial use of the DeepAR model (https://arxiv.org/abs/1704.04110) to provide a parameteric probabilistic forecasting method based on Gaussian assumption. 
+    def __init__(self, num_neurons = 64, input_window_size = 24, predicted_step = 1, layer_num = 2, bidirectional = True, device = 'cpu'):
+        super(GRU, self).__init__()
+        self.input_window_size = input_window_size
+        self.predicted_step = predicted_step
+        self.num_neurons = num_neurons
+        self.device = device
+        self.layer_num = layer_num
+        self.D = 1
+        if bidirectional:
+            self.D = 2
+        self.gru = nn.GRU(1, self.num_neurons, self.layer_num, batch_first=True, bidirectional = bidirectional)
+        self.distribution_mu = nn.Linear(self.D*self.num_neurons, self.predicted_step)
+        self.distribution_presigma = nn.Linear(self.D*self.num_neurons, self.predicted_step)
+    
+    def forward(self, x):
+        hidden_state0 = torch.zeros(self.D*self.layer_num, x.size(0), self.num_neurons).to(self.device)
+        output, _ = self.gru(x, hidden_state0)
+        pre_sigma = self.distribution_presigma(output)
+        mu = self.distribution_mu(output)
+        sigma = nn.Softplus(pre_sigma)
+        return mu, sigma
