@@ -1,5 +1,5 @@
 # Multi-objective-gradient-descent-wind-power-interval-prediction
-This repository contains the source code for multi-objective gradient descent-based lower upper bound estimation (MOGD-LUBE) approach for wind power interval prediction. The original paper can be found using following link: .
+This repository contains the source code for multi-objective gradient descent-based lower upper bound estimation (MOGD-LUBE) approach for wind power interval prediction.
 A script [run.ipynb](https://github.com/icarusunimelb/Multi-objective-gradient-descent-wind-power-interval-prediction/blob/main/run.ipynb) is provided to test the code. To apply the model on other datasets, please refer to the [preprocessing.py](https://github.com/icarusunimelb/Multi-objective-gradient-descent-wind-power-interval-prediction/blob/main/preprocessing.py) to generate time series dataset with suitable format and modify the dataset path in [trainer.py](https://github.com/icarusunimelb/Multi-objective-gradient-descent-wind-power-interval-prediction/blob/main/trainer.py).  
 ### Updates 
 The Monte-carlo dropout (MC-dropout) for recurrent neural network is implemented and therefore the model.py supports the implementation of Bayesian neural network (which focuses on measuring model uncertainty). Please check the bayesian_trainer.py to understand how to make use of it. 
