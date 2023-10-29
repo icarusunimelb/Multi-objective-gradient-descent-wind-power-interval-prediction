@@ -9,7 +9,7 @@ import matplotlib.style as style
 
 DATASET_PATH = './dataset/ninja_wind_europe_v1.1_current_national.csv'
 INPUT_WINDOW_SIZE = 24
-PREDICTED_STEP = 24
+PREDICTED_STEP = 6
 
 def data_reader():
     df = pd.read_csv(DATASET_PATH)

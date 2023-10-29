@@ -14,6 +14,7 @@ import snntorch as snn
 from snntorch import spikegen
 from snntorch import surrogate 
 
+# TO DO: The recent multi-step implementation is based on Dense layer decoding. Should try some other methods such as seq2seq.
 class winkler_objective(nn.Module):
     "Constrainted Winkler loss function"
     def __init__(self, lambda_ = 0.001, alpha_ = 0.05, soften_=160., device='cpu', batch_size=128):
@@ -25,9 +26,10 @@ class winkler_objective(nn.Module):
         self.batch_size = batch_size
     
     def forward(self, y_pred, y_true):
-        y_true = y_true[:,0]
-        y_u = y_pred[:,0]
-        y_l = y_pred[:,1]
+        y_true = y_true
+        # odd index element is the upperbound at time t, while even index element is the lowerbound at time t. 
+        y_u = y_pred[:,::2]
+        y_l = y_pred[:,1::2]
 
         K_SU = torch.sigmoid(self.soften_ * (y_u - y_true))
         K_SL = torch.sigmoid(self.soften_ * (y_true - y_l))
@@ -57,9 +59,9 @@ class qd_objective(nn.Module):
         self.batch_size = batch_size
     
     def forward(self, y_pred, y_true):
-        y_true = y_true[:,0]
-        y_u = y_pred[:,0]
-        y_l = y_pred[:,1]
+        y_true = y_true
+        y_u = y_pred[:,::2]
+        y_l = y_pred[:,1::2]
 
         K_HU = torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_u - y_true))
         K_HL = torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_true - y_l))
@@ -72,7 +74,10 @@ class qd_objective(nn.Module):
         PICP_S = torch.mean(K_S)
 
         MPIW_c = torch.sum(torch.multiply((y_u - y_l),K_H))/(torch.sum(K_H)+self.epsilon)
+        # The higher PICP the better
         MLE_PICP = self.batch_size / (self.alpha_ * (1-self.alpha_)) * torch.square(torch.maximum(torch.zeros(1).to(self.device),(1-self.alpha_) - PICP_S))
+        # The closer to nominal confidence the better
+        # MLE_PICP = self.batch_size / (self.alpha_ * (1-self.alpha_)) * torch.square((1-self.alpha_) - PICP_S)
         
         Loss_S = MPIW_c + self.lambda_ * MLE_PICP
         
@@ -211,7 +216,10 @@ class LSTM(nn.Module):
         self.lstm1 = nn.LSTMCell(1, self.num_neurons)
         self.lstm2 = nn.LSTMCell(self.num_neurons, self.num_neurons)
         self.output = nn.Linear(self.num_neurons, 2*self.predicted_step)
-        self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
+        output_bias = torch.tensor([0.2,-0.2])
+        for i in range(self.predicted_step-1):
+            output_bias = torch.cat((output_bias, torch.tensor([0.2,-0.2])))
+        self.output.bias = torch.nn.Parameter(output_bias)
 
     def forward(self, x):   
         # batch_size x hidden_size
@@ -248,7 +256,10 @@ class GRU(nn.Module):
         self.gru = nn.GRU(1, self.num_neurons, self.layer_num, batch_first=True, bidirectional = bidirectional)
         self.output = nn.Linear(self.D*self.num_neurons, 2*self.predicted_step)
         # When meet init issue in qd objective, can uncomment the following code 
-        self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
+        output_bias = torch.tensor([0.2,-0.2])
+        for i in range(self.predicted_step-1):
+            output_bias = torch.cat((output_bias, torch.tensor([0.2,-0.2])))
+        self.output.bias = torch.nn.Parameter(output_bias)
 
     def forward(self, x):  
         # Initializing hidden state for first input with zeros
@@ -268,7 +279,10 @@ class SNN(nn.Module):
         self.slstm1 = snn.SLSTM(1, self.num_neurons, threshold=self.threshold, spike_grad=surrogate.fast_sigmoid(), learn_threshold=True)
         self.slstm2 = snn.SLSTM(self.num_neurons, self.num_neurons, threshold=self.threshold, spike_grad=surrogate.fast_sigmoid(), learn_threshold=True)
         self.output = nn.Linear((self.input_window_size+2)*self.num_neurons, 2*self.predicted_step)
-        self.output.bias = torch.nn.Parameter(torch.tensor([0.2,-0.2]))
+        output_bias = torch.tensor([0.2,-0.2])
+        for i in range(self.predicted_step-1):
+            output_bias = torch.cat((output_bias, torch.tensor([0.2,-0.2])))
+        self.output.bias = torch.nn.Parameter(output_bias)
 
     def forward(self, x):
         # Initialize hidden states and outputs at t=0
@@ -308,10 +322,10 @@ class gaussian_log_likelihood(nn.Module):
         return -torch.mean(likelihood)
        
 
-class DeepAR(nn.module): 
+class DeepAR(nn.Module): 
     # This model only makes partial use of the DeepAR model (https://arxiv.org/abs/1704.04110) to provide a parameteric probabilistic forecasting method based on Gaussian assumption. 
     def __init__(self, num_neurons = 64, input_window_size = 24, predicted_step = 1, layer_num = 2, bidirectional = True, device = 'cpu'):
-        super(GRU, self).__init__()
+        super(DeepAR, self).__init__()
         self.input_window_size = input_window_size
         self.predicted_step = predicted_step
         self.num_neurons = num_neurons
@@ -323,11 +337,12 @@ class DeepAR(nn.module):
         self.gru = nn.GRU(1, self.num_neurons, self.layer_num, batch_first=True, bidirectional = bidirectional)
         self.distribution_mu = nn.Linear(self.D*self.num_neurons, self.predicted_step)
         self.distribution_presigma = nn.Linear(self.D*self.num_neurons, self.predicted_step)
+        self.distribution_sigma = nn.Softplus()
     
     def forward(self, x):
         hidden_state0 = torch.zeros(self.D*self.layer_num, x.size(0), self.num_neurons).to(self.device)
         output, _ = self.gru(x, hidden_state0)
-        pre_sigma = self.distribution_presigma(output)
-        mu = self.distribution_mu(output)
-        sigma = nn.Softplus(pre_sigma)
+        pre_sigma = self.distribution_presigma(output[:,-1,:])
+        mu = self.distribution_mu(output[:,-1,:])
+        sigma = self.distribution_sigma(pre_sigma)
         return mu, sigma

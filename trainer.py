@@ -183,6 +183,7 @@ class trainer():
                 elif self.lossType == 'deepAR' : 
                     optimizer.zero_grad()
                     mu, sigma = model(inputs)
+                    outputs = torch.cat([mu+self.n_std_devs*sigma, mu-self.n_std_devs*sigma],1)
                     loss = criterion[0](mu, sigma, targets)
                     loss_data[0] = loss.item()
                     loss.backward()
@@ -233,7 +234,10 @@ class trainer():
                 else:
                     outputs = model(inputs)
                 for i in range(self.num_task):
-                    loss_t = criterion[i](outputs, targets)
+                    if self.lossType == 'deepAR':
+                        loss_t = criterion[i](mu, sigma, targets)
+                    else:
+                        loss_t = criterion[i](outputs, targets)
                     loss_data[i] = loss_t.item()
                 for i in range(self.num_task):
                     valid_loss_dict[i] = valid_loss_dict[i] + loss_data[i]*inputs.size(0)
@@ -287,7 +291,7 @@ class trainer():
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[], gamma=1)
         # create loss function
         criterion = {}
-        assert self.lossType in ['qd','winkler']
+        assert self.lossType in ['qd','winkler', 'deepAR']
         if self.lossType == 'qd':
             criterion[0] = qd_objective(lambda_=self.lambda1_, alpha_=self.alpha_, soften_=self.soften_, device=self.device, batch_size=self.batch_size)
             if self.num_task == 2:
@@ -308,7 +312,7 @@ class trainer():
         # begin training
         lrs, train_loss_list_dict, valid_loss_list_dict, train_objective_list_dict, valid_objective_list_dict= self.training_loop(X_train = X_train, y_train = y_train, X_val = X_val, y_val = y_val, model = model, optimizer = optimizer, scheduler = scheduler, criterion = criterion)
 
-        if self.draw:
+        if self.draw and self.predicted_step==1:
             
             '''
  
@@ -346,30 +350,69 @@ class trainer():
 
             self.display_size = 200
             # plot and view some predictions
-            y_pred = model(Variable(torch.tensor(X_val[300:300+self.display_size],dtype=torch.float)).to(self.device))
-            y_u_pred = y_pred[:,0]
-            y_l_pred = y_pred[:,1]
+            if self.lossType == 'deepAR':
+                mu, sigma = model(Variable(torch.tensor(X_val[300:300+self.display_size],dtype=torch.float)).to(self.device))
+                y_u_pred = mu+self.n_std_devs*sigma
+                y_l_pred = mu-self.n_std_devs*sigma
+            else:
+                y_pred = model(Variable(torch.tensor(X_val[300:300+self.display_size],dtype=torch.float)).to(self.device))
+                y_u_pred = y_pred[:,::2]
+                y_l_pred = y_pred[:,1::2]
 
             plt.plot(np.arange(self.display_size),y_val[300:300+self.display_size,0],linewidth=3, color='black',label='Observations')
 
-            plt.plot(np.arange(self.display_size), y_u_pred.cpu().detach().numpy(), color='#33FFE3') # upper boundary prediction
-            plt.plot(np.arange(self.display_size), y_l_pred.cpu().detach().numpy(), color='#33FFE3') # lower boundary prediction
-            plt.fill_between(np.arange(self.display_size), y_u_pred.cpu().detach().numpy(), y_l_pred.cpu().detach().numpy(), color='#33FFE3', label='Prediction intervals')
+            plt.plot(np.arange(self.display_size), y_u_pred.cpu().detach().numpy().flatten(), color='#33FFE3') # upper boundary prediction
+            plt.plot(np.arange(self.display_size), y_l_pred.cpu().detach().numpy().flatten(), color='#33FFE3') # lower boundary prediction
+            plt.fill_between(np.arange(self.display_size), y_u_pred.cpu().detach().numpy().flatten(), y_l_pred.cpu().detach().numpy().flatten(), color='#33FFE3', label='Prediction intervals')
             plt.xlabel("Time(hour)",fontsize=64)
             plt.ylabel("Normalized wind power",fontsize=64)
             plt.xticks(fontsize = 42)
             plt.yticks(fontsize = 42)
             plt.legend(loc="upper right",fontsize=64)
             plt.show()
+        elif self.draw and self.predicted_step > 1: 
+            self.display_size = 1
+            N = 5
+            # plot and view some predictions
+            if self.lossType == 'deepAR':
+                mu, sigma = model(Variable(torch.tensor(X_val[300:300+self.display_size],dtype=torch.float)).to(self.device))
+                y_u_pred = mu+self.n_std_devs*sigma
+                y_l_pred = mu-self.n_std_devs*sigma
+            else:
+                y_pred = model(Variable(torch.tensor(X_val[300:300+self.display_size],dtype=torch.float)).to(self.device))
+                y_u_pred = y_pred[:,::2]
+                y_l_pred = y_pred[:,1::2]
+            
+            time_series = y_val[300,:]
+            for l in range(N):
+                time_series = np.concatenate((X_val[300-l*self.input_window_size,:,0],time_series))
+                
+            plt.plot(np.arange(N*self.input_window_size+self.predicted_step),time_series,linewidth=3, color='black',label='Observations')
+
+            plt.plot(np.arange((N-1)*self.input_window_size+self.input_window_size,N*self.input_window_size+self.predicted_step), y_u_pred.cpu().detach().numpy().flatten(), color='#33FFE3') # upper boundary prediction
+            plt.plot(np.arange((N-1)*self.input_window_size+self.input_window_size,N*self.input_window_size+self.predicted_step), y_l_pred.cpu().detach().numpy().flatten(), color='#33FFE3') # lower boundary prediction
+            plt.fill_between(np.arange((N-1)*self.input_window_size+self.input_window_size,N*self.input_window_size+self.predicted_step), y_u_pred.cpu().detach().numpy().flatten(), y_l_pred.cpu().detach().numpy().flatten(), color='#33FFE3', label='Prediction intervals')
+            plt.xlabel("Time(hour)",fontsize=64)
+            plt.ylabel("Normalized wind power",fontsize=64)
+            plt.xticks(fontsize = 42)
+            plt.yticks(fontsize = 42)
+            plt.legend(loc="upper right",fontsize=64)
+            plt.show()
+    
         # print some stats
-        y_pred = model(Variable(torch.tensor(X_val,dtype=torch.float)).to(self.device))
-        y_u_pred = y_pred[:,0]
-        y_l_pred = y_pred[:,1]
-        K_u = torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_u_pred - Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device)))
-        K_l = torch.maximum(torch.zeros(1).to(self.device),torch.sign(Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device) - y_l_pred))
+        if self.lossType == 'deepAR':
+            mu, sigma = model(Variable(torch.tensor(X_val,dtype=torch.float)).to(self.device))
+            y_u_pred = mu+self.n_std_devs*sigma
+            y_l_pred = mu-self.n_std_devs*sigma
+        else:
+            y_pred = model(Variable(torch.tensor(X_val,dtype=torch.float)).to(self.device))
+            y_u_pred = y_pred[:,::2]
+            y_l_pred = y_pred[:,1::2]
+        K_u = torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_u_pred - Variable(torch.tensor(y_val,dtype=torch.float)).to(self.device)))
+        K_l = torch.maximum(torch.zeros(1).to(self.device),torch.sign(Variable(torch.tensor(y_val,dtype=torch.float)).to(self.device) - y_l_pred))
         picp = torch.mean(K_u * K_l)
         mpiw = torch.round(torch.mean(torch.absolute(y_u_pred - y_l_pred)),decimals=3)
-        S_t = torch.abs(y_u_pred-y_l_pred) + (2/self.alpha_)*(torch.multiply(y_l_pred-Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device), torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_l_pred - Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device))))) + (2/self.alpha_)*(torch.multiply(Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device)-y_u_pred, torch.maximum(torch.zeros(1).to(self.device),torch.sign(Variable(torch.tensor(y_val[:,0],dtype=torch.float)).to(self.device) - y_u_pred))))
+        S_t = torch.abs(y_u_pred-y_l_pred) + (2/self.alpha_)*(torch.multiply(y_l_pred-Variable(torch.tensor(y_val,dtype=torch.float)).to(self.device), torch.maximum(torch.zeros(1).to(self.device),torch.sign(y_l_pred - Variable(torch.tensor(y_val,dtype=torch.float)).to(self.device))))) + (2/self.alpha_)*(torch.multiply(Variable(torch.tensor(y_val,dtype=torch.float)).to(self.device)-y_u_pred, torch.maximum(torch.zeros(1).to(self.device),torch.sign(Variable(torch.tensor(y_val,dtype=torch.float)).to(self.device) - y_u_pred))))
         S_overline = torch.mean(S_t)
         print('PICP:', picp)
         print('MPIW:', mpiw)
