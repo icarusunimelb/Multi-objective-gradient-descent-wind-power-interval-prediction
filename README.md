@@ -36,6 +36,18 @@ and
       pages={1-5},
       doi={10.1109/ISCAS46773.2023.10181537}}
 ```
+and 
+```
+    @article{CHEN2024101363,
+        title = {A novel interval estimation framework for wind power forecasting using multi-objective gradient descent optimization},
+        journal = {Sustainable Energy, Grids and Networks},
+        pages = {101363},
+        year = {2024},
+        issn = {2352-4677},
+        doi = {https://doi.org/10.1016/j.segan.2024.101363},
+        url = {https://www.sciencedirect.com/science/article/pii/S2352467724000924},
+        author = {Yinsong Chen and Samson Yu and Chee Peng Lim and Peng Shi}}
+```
 
 ## Licence
 MOGD-LUBE is licensed under the open source [MIT License](https://github.com/icarusunimelb/Multi-objective-gradient-descent-wind-power-interval-prediction/blob/main/LICENSE.md).
